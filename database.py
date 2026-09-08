@@ -1,58 +1,108 @@
-import os
 import sqlite3
 import hashlib
-import psycopg2
 
-# Render provides DATABASE_URL in production. Fallback to local SQLite for offline testing.
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-def get_connection():
-    if DATABASE_URL:
-        # Render PostgreSQL URL adjustment for psycopg2 if needed
-        url = DATABASE_URL.replace("postgres://", "postgresql://")
-        return psycopg2.connect(url)
-    else:
-        # Local fallback database
-        return sqlite3.connect("caretaker_server.db")
+DB_NAME = "caretaker_app.db"
 
 def init_db():
-    conn = get_connection()
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    # Auto-detect placeholder type (%s for Postgres, ? for SQLite)
-    is_postgres = DATABASE_URL is not None
-    pk_type = "SERIAL PRIMARY KEY" if is_postgres else "INTEGER PRIMARY KEY AUTOINCREMENT"
-    
-    # Users Table
-    cursor.execute(f'''
+    cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
-            id {pk_type},
-            username VARCHAR(50) UNIQUE NOT NULL,
-            password VARCHAR(256) NOT NULL,
-            role VARCHAR(20) NOT NULL,
-            service_type VARCHAR(50),
-            full_name VARCHAR(100) NOT NULL,
-            rating REAL DEFAULT 5.0,
-            hourly_rate INT DEFAULT 25,
-            is_available INT DEFAULT 1
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            role TEXT NOT NULL,
+            service_type TEXT,
+            full_name TEXT NOT NULL
         )
     ''')
     
-    # Bookings Table
-    cursor.execute(f'''
+    cursor.execute('''
         CREATE TABLE IF NOT EXISTS bookings (
-            id {pk_type},
-            client_username VARCHAR(50) NOT NULL,
-            worker_username VARCHAR(50),
-            service_type VARCHAR(50) NOT NULL,
-            date_time VARCHAR(100) NOT NULL,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_username TEXT NOT NULL,
+            worker_username TEXT,
+            service_type TEXT NOT NULL,
+            date_time TEXT NOT NULL,
             notes TEXT NOT NULL,
-            status VARCHAR(20) DEFAULT 'Pending'
+            status TEXT DEFAULT 'Pending'
         )
     ''')
     
     conn.commit()
     conn.close()
 
-def hash_password(password: str) -> str:
+def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
+
+def register_user(username, password, full_name, role, service_type=None):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO users (username, password, full_name, role, service_type) VALUES (?, ?, ?, ?, ?)",
+            (username, hash_password(password), full_name, role, service_type)
+        )
+        conn.commit()
+        return True, "Registration successful!"
+    except sqlite3.IntegrityError:
+        return False, "Username already exists."
+    finally:
+        conn.close()
+
+def authenticate_user(username, password):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT role, service_type, full_name FROM users WHERE username = ? AND password = ?",
+        (username, hash_password(password))
+    )
+    result = cursor.fetchone()
+    conn.close()
+    return result
+
+def create_booking(client_username, service_type, date_time, notes):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO bookings (client_username, service_type, date_time, notes) VALUES (?, ?, ?, ?)",
+        (client_username, service_type, date_time, notes)
+    )
+    conn.commit()
+    conn.close()
+
+def fetch_client_bookings(client_username):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, service_type, date_time, notes, status, worker_username FROM bookings WHERE client_username = ? ORDER BY id DESC",
+        (client_username,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def fetch_worker_jobs(service_type, worker_username):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, client_username, date_time, notes, status FROM bookings WHERE service_type = ? AND (status = 'Pending' OR worker_username = ?) ORDER BY id DESC",
+        (service_type, worker_username)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
+
+def update_job_status(booking_id, worker_username, status):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE bookings SET status = ?, worker_username = ? WHERE id = ?",
+        (status, worker_username, booking_id)
+    )
+    conn.commit()
+    conn.close()
+
+if __name__ in {"__main__", "__mp_main__"}:
+    init_db()
